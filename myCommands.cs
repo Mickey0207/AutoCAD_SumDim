@@ -25,6 +25,7 @@ namespace AutoCAD_SumDim
         {
             public string LeaderText { get; set; }
             public MultiPolylineAnalysisResult AnalysisResult { get; set; }
+            public int GroupIndex { get; set; } // 新增：用於標識不同的選擇組
         }
 
         // 聚合線分段分析命令 - 支援重複選擇和詳細分析
@@ -38,6 +39,7 @@ namespace AutoCAD_SumDim
 
                 // List to store all analysis data
                 var allAnalysisData = new List<PolylineAnalysisData>();
+                int groupIndex = 0; // 用於追蹤不同的選擇組
 
                 while (true)
                 {
@@ -118,8 +120,13 @@ namespace AutoCAD_SumDim
                     {
                         // 4. Store and display data in command line
                         string mainText = leaderTexts.Count > 0 ? leaderTexts[0] : "聚合線分析";
-                        allAnalysisData.Add(new PolylineAnalysisData { LeaderText = mainText, AnalysisResult = result });
+                        allAnalysisData.Add(new PolylineAnalysisData { 
+                            LeaderText = mainText, 
+                            AnalysisResult = result,
+                            GroupIndex = groupIndex // 設置組索引
+                        });
                         ed.WriteMessage($"\n已記錄: 標註='{mainText}', 總長度={result.TotalLength:F2}, 總段數={result.Segments.Count}");
+                        groupIndex++; // 增加組索引
                     }
                     else
                     {
@@ -246,9 +253,9 @@ namespace AutoCAD_SumDim
             resultForm.MaximizeBox = true;
             resultForm.ShowInTaskbar = false;
 
-            // Create unit conversion panel with increased height to accommodate larger radio buttons
+            // Create unit conversion panel
             Panel unitPanel = new Panel();
-            unitPanel.Height = 160; // Increased height for larger radio buttons
+            unitPanel.Height = 200; // Increased height for color checkbox
             unitPanel.Dock = DockStyle.Top;
             unitPanel.BorderStyle = BorderStyle.FixedSingle;
             unitPanel.BackColor = Color.FromArgb(250, 250, 250); // Light gray background
@@ -291,6 +298,9 @@ namespace AutoCAD_SumDim
             targetGroupBox.Controls.Add(tgtM);
             targetGroupBox.Controls.Add(tgtKm);
 
+            // Create color option checkbox with larger size
+            CheckBox colorCheckBox = CreateStyledCheckBox("使用不同顏色區分線段所屬聚合線", 20, 155, false);
+
             // Create styled convert button with better positioning
             Button convertButton = new Button();
             convertButton.Text = "轉換單位";
@@ -310,6 +320,7 @@ namespace AutoCAD_SumDim
             // Add all controls to unit panel
             unitPanel.Controls.Add(sourceGroupBox);
             unitPanel.Controls.Add(targetGroupBox);
+            unitPanel.Controls.Add(colorCheckBox);
             unitPanel.Controls.Add(convertButton);
 
             // Create a DataGridView with explicit row height of 70
@@ -350,6 +361,24 @@ namespace AutoCAD_SumDim
                 {
                     row.Height = 70; // Explicitly set each row height to 70
                 }
+                // Apply colors if checkbox is checked
+                if (colorCheckBox.Checked)
+                {
+                    ApplyRowColors(dgv, allData);
+                }
+            };
+
+            // Color checkbox change event
+            colorCheckBox.CheckedChanged += (sender, e) =>
+            {
+                if (colorCheckBox.Checked)
+                {
+                    ApplyRowColors(dgv, allData);
+                }
+                else
+                {
+                    RemoveRowColors(dgv);
+                }
             };
 
             // Convert button click event
@@ -362,6 +391,12 @@ namespace AutoCAD_SumDim
                 {
                     var convertedTable = ConvertTableUnits(allData, maxSegments, sourceUnit, targetUnit);
                     dgv.DataSource = convertedTable;
+                    
+                    // Reapply colors if checkbox is checked
+                    if (colorCheckBox.Checked)
+                    {
+                        ApplyRowColors(dgv, allData);
+                    }
                 }
             };
 
@@ -388,7 +423,7 @@ namespace AutoCAD_SumDim
                 saveFileDialog.Title = "匯出為 CSV";
                 if (saveFileDialog.ShowDialog() == DialogResult.OK)
                 {
-                    ExportToCsv((System.Data.DataTable)dgv.DataSource, saveFileDialog.FileName);
+                    ExportToCsv((System.Data.DataTable)dgv.DataSource, saveFileDialog.FileName, colorCheckBox.Checked ? allData : null);
                 }
             };
 
@@ -401,17 +436,216 @@ namespace AutoCAD_SumDim
             AcadApp.ShowModalDialog(resultForm);
         }
 
+        private CheckBox CreateStyledCheckBox(string text, int x, int y, bool isChecked)
+        {
+            CheckBox cb = new CheckBox();
+            cb.Text = text;
+            cb.Font = new System.Drawing.Font("Microsoft JhengHei", 11, System.Drawing.FontStyle.Regular);
+            cb.Location = new Point(x, y);
+            cb.Checked = isChecked;
+            cb.ForeColor = Color.FromArgb(64, 64, 64);
+            
+            // Calculate size based on text size and ensure checkbox is larger than text
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+            {
+                SizeF textSize = g.MeasureString(cb.Text, cb.Font);
+                cb.Size = new Size((int)textSize.Width + 40, Math.Max((int)textSize.Height + 10, 35));
+            }
+            
+            return cb;
+        }
+
         private RadioButton CreateStyledRadioButton(string text, int x, int y, bool isChecked)
         {
             RadioButton rb = new RadioButton();
             rb.Text = text;
-            rb.Font = new System.Drawing.Font("Microsoft JhengHei", 11, System.Drawing.FontStyle.Regular); // Slightly larger font
+            rb.Font = new System.Drawing.Font("Microsoft JhengHei", 11, System.Drawing.FontStyle.Regular);
             rb.Location = new Point(x, y);
             rb.Checked = isChecked;
-            rb.Size = new Size(140, 35); // Increased size for larger checkbox and better readability
+            rb.Size = new Size(140, 35);
             rb.ForeColor = Color.FromArgb(64, 64, 64);
             
             return rb;
+        }
+
+        private void ApplyRowColors(DataGridView dgv, List<PolylineAnalysisData> allData)
+        {
+            if (!dgv.Columns.Cast<DataGridViewColumn>().Any(c => c.Name.StartsWith("線段")))
+                return;
+
+            // Define colors for different polylines within the same group
+            Color[] polylineColors = new Color[]
+            {
+                Color.FromArgb(173, 216, 230), // Light blue
+                Color.FromArgb(255, 255, 224), // Light yellow  
+                Color.FromArgb(152, 251, 152), // Light green
+                Color.FromArgb(255, 182, 193), // Light pink
+                Color.FromArgb(221, 160, 221), // Light purple
+                Color.FromArgb(255, 218, 185), // Light orange
+                Color.FromArgb(176, 224, 230), // Light cyan
+                Color.FromArgb(240, 230, 140), // Light khaki
+            };
+
+            int rowIndex = 0;
+            foreach (var data in allData)
+            {
+                if (rowIndex < dgv.Rows.Count)
+                {
+                    var row = dgv.Rows[rowIndex];
+                    
+                    // Apply different colors to segments based on their polyline index
+                    ApplyCellColors(row, data.AnalysisResult, polylineColors);
+                    
+                    rowIndex++;
+                    
+                    // Also apply to additional leader text rows
+                    for (int j = 1; j < data.AnalysisResult.LeaderTexts.Count && rowIndex < dgv.Rows.Count; j++)
+                    {
+                        var extraRow = dgv.Rows[rowIndex];
+                        ApplyCellColors(extraRow, data.AnalysisResult, polylineColors);
+                        rowIndex++;
+                    }
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        private void ApplyCellColors(DataGridViewRow row, MultiPolylineAnalysisResult analysisResult, Color[] polylineColors)
+        {
+            // Keep the first column (標註文字) with default color
+            row.Cells[0].Style.BackColor = Color.White;
+            
+            // Apply colors to segment columns based on polyline index
+            for (int segmentIndex = 0; segmentIndex < analysisResult.Segments.Count; segmentIndex++)
+            {
+                int columnIndex = segmentIndex + 1; // +1 because first column is 標註文字
+                
+                if (columnIndex < row.Cells.Count)
+                {
+                    var segment = analysisResult.Segments[segmentIndex];
+                    Color segmentColor = polylineColors[segment.PolylineIndex % polylineColors.Length];
+                    row.Cells[columnIndex].Style.BackColor = segmentColor;
+                }
+            }
+            
+            // Set empty cells to white
+            for (int i = analysisResult.Segments.Count + 1; i < row.Cells.Count; i++)
+            {
+                row.Cells[i].Style.BackColor = Color.White;
+            }
+        }
+
+        private void RemoveRowColors(DataGridView dgv)
+        {
+            foreach (DataGridViewRow row in dgv.Rows)
+            {
+                // Reset all cell colors to default
+                foreach (DataGridViewCell cell in row.Cells)
+                {
+                    cell.Style.BackColor = Color.White;
+                }
+                
+                // Reset row-level background color
+                row.DefaultCellStyle.BackColor = Color.White;
+            }
+            
+            // Restore alternating row colors
+            for (int i = 0; i < dgv.Rows.Count; i++)
+            {
+                if (i % 2 == 1)
+                {
+                    dgv.Rows[i].DefaultCellStyle.BackColor = Color.FromArgb(245, 245, 245);
+                }
+            }
+        }
+
+        private void ExportToCsv(System.Data.DataTable table, string filePath, List<PolylineAnalysisData> colorData = null)
+        {
+            using (var writer = new System.IO.StreamWriter(filePath, false, System.Text.Encoding.UTF8))
+            {
+                // Write column headers
+                for (int col = 0; col < table.Columns.Count; col++)
+                {
+                    writer.Write(table.Columns[col].ColumnName);
+                    if (col < table.Columns.Count - 1)
+                    {
+                        writer.Write(",");
+                    }
+                }
+                
+                // Add color group column header if color data is provided
+                if (colorData != null)
+                {
+                    writer.Write(",線段聚合線對應");
+                }
+                writer.WriteLine();
+
+                // Write rows
+                int rowIndex = 0;
+                foreach (System.Data.DataRow row in table.Rows)
+                {
+                    for (int col = 0; col < table.Columns.Count; col++)
+                    {
+                        // Escape commas and quotes in CSV
+                        string cellValue = row[col]?.ToString() ?? "";
+                        if (cellValue.Contains(",") || cellValue.Contains("\"") || cellValue.Contains("\n"))
+                        {
+                            cellValue = "\"" + cellValue.Replace("\"", "\"\"") + "\"";
+                        }
+                        writer.Write(cellValue);
+                        if (col < table.Columns.Count - 1)
+                        {
+                            writer.Write(",");
+                        }
+                    }
+                    
+                    // Add polyline mapping information if color data is provided
+                    if (colorData != null)
+                    {
+                        string polylineMapping = GetPolylineMappingForRow(rowIndex, colorData);
+                        writer.Write($",\"{polylineMapping}\"");
+                    }
+                    
+                    writer.WriteLine();
+                    rowIndex++;
+                }
+            }
+        }
+
+        private string GetPolylineMappingForRow(int rowIndex, List<PolylineAnalysisData> allData)
+        {
+            int currentRowIndex = 0;
+            foreach (var data in allData)
+            {
+                if (currentRowIndex == rowIndex)
+                {
+                    // Create a mapping string showing which segments belong to which polylines
+                    var mappingList = new List<string>();
+                    for (int i = 0; i < data.AnalysisResult.Segments.Count; i++)
+                    {
+                        var segment = data.AnalysisResult.Segments[i];
+                        mappingList.Add($"線段{i + 1}:聚合線{segment.PolylineIndex + 1}");
+                    }
+                    return string.Join(";", mappingList);
+                }
+                
+                currentRowIndex++;
+                
+                // Skip additional leader text rows
+                for (int j = 1; j < data.AnalysisResult.LeaderTexts.Count; j++)
+                {
+                    if (currentRowIndex == rowIndex)
+                    {
+                        return ""; // Extra leader text rows don't have segment mapping
+                    }
+                    currentRowIndex++;
+                }
+            }
+            
+            return "";
         }
 
         private string GetSelectedUnit(params RadioButton[] radioButtons)
@@ -548,37 +782,6 @@ namespace AutoCAD_SumDim
             }
 
             return table;
-        }
-
-        private void ExportToCsv(System.Data.DataTable table, string filePath)
-        {
-            using (var writer = new System.IO.StreamWriter(filePath, false, System.Text.Encoding.UTF8))
-            {
-                // Write column headers
-                for (int col = 0; col < table.Columns.Count; col++)
-                {
-                    writer.Write(table.Columns[col].ColumnName);
-                    if (col < table.Columns.Count - 1)
-                    {
-                        writer.Write(",");
-                    }
-                }
-                writer.WriteLine();
-
-                // Write rows
-                foreach (System.Data.DataRow row in table.Rows)
-                {
-                    for (int col = 0; col < table.Columns.Count; col++)
-                    {
-                        writer.Write(row[col]?.ToString());
-                        if (col < table.Columns.Count - 1)
-                        {
-                            writer.Write(",");
-                        }
-                    }
-                    writer.WriteLine();
-                }
-            }
         }
     }
 }

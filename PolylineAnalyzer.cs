@@ -31,6 +31,7 @@ namespace AutoCAD_SumDim
         public Point3d EndPoint { get; set; }
         public double Length { get; set; }
         public string SegmentType { get; set; } = "直線"; // "直線" 或 "弧線"
+        public int PolylineIndex { get; set; } // 新增：標識此線段屬於哪條聚合線
     }
 
     // 簡化的聚合線分析器
@@ -50,8 +51,9 @@ namespace AutoCAD_SumDim
                     result.PolylineCount = polylineIds.Count;
 
                     // 分析每條聚合線的線段
-                    foreach (var polylineId in polylineIds)
+                    for (int polylineIndex = 0; polylineIndex < polylineIds.Count; polylineIndex++)
                     {
+                        var polylineId = polylineIds[polylineIndex];
                         Polyline pline = tr.GetObject(polylineId, OpenMode.ForRead) as Polyline;
                         if (pline == null) continue;
 
@@ -82,7 +84,8 @@ namespace AutoCAD_SumDim
                                 StartPoint = segStartPoint,
                                 EndPoint = segEndPoint,
                                 Length = segLength,
-                                SegmentType = segType
+                                SegmentType = segType,
+                                PolylineIndex = polylineIndex // 設置聚合線索引
                             });
                         }
                     }
