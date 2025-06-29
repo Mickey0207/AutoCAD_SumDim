@@ -11,6 +11,7 @@ using System.Linq;
 using System.Data;
 using System.Drawing;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
+using OfficeOpenXml;
 
 [assembly: CommandClass(typeof(AutoCAD_SumDim.MyCommands))]
 [assembly: ExtensionApplication(typeof(AutoCAD_SumDim.PluginExtension))]
@@ -27,7 +28,7 @@ namespace AutoCAD_SumDim
         }
 
         // 聚合線分段分析命令 - 支援重複選擇和詳細分析
-        [CommandMethod("PLPICK", "聚合線點選", "聚合線點選", CommandFlags.Modal)]
+        [CommandMethod("PLPICK", "聚合線點選", "PLPICK", CommandFlags.Modal)]
         public void PolylinePickStats()
         {
             try
@@ -311,11 +312,60 @@ namespace AutoCAD_SumDim
             // Bind the DataTable to the DataGridView
             dgv.DataSource = table;
 
-            // Add the DataGridView to the form
+            // Create an export button
+            Button exportButton = new Button();
+            exportButton.Text = "匯出為 CSV";
+            exportButton.Font = new System.Drawing.Font("Arial", 12, System.Drawing.FontStyle.Regular);
+            exportButton.Height = exportButton.Font.Height + 10; // Ensure button height is greater than text height
+            exportButton.Dock = DockStyle.Bottom;
+            exportButton.Click += (sender, e) =>
+            {
+                SaveFileDialog saveFileDialog = new SaveFileDialog();
+                saveFileDialog.Filter = "CSV Files|*.csv";
+                saveFileDialog.Title = "匯出為 CSV";
+                if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    ExportToCsv(table, saveFileDialog.FileName);
+                }
+            };
+
+            // Add the DataGridView and button to the form
             resultForm.Controls.Add(dgv);
+            resultForm.Controls.Add(exportButton);
 
             // Show the form modally
             AcadApp.ShowModalDialog(resultForm);
+        }
+
+        private void ExportToCsv(System.Data.DataTable table, string filePath)
+        {
+            using (var writer = new System.IO.StreamWriter(filePath, false, System.Text.Encoding.UTF8))
+            {
+                // Write column headers
+                for (int col = 0; col < table.Columns.Count; col++)
+                {
+                    writer.Write(table.Columns[col].ColumnName);
+                    if (col < table.Columns.Count - 1)
+                    {
+                        writer.Write(",");
+                    }
+                }
+                writer.WriteLine();
+
+                // Write rows
+                foreach (System.Data.DataRow row in table.Rows)
+                {
+                    for (int col = 0; col < table.Columns.Count; col++)
+                    {
+                        writer.Write(row[col]?.ToString());
+                        if (col < table.Columns.Count - 1)
+                        {
+                            writer.Write(",");
+                        }
+                    }
+                    writer.WriteLine();
+                }
+            }
         }
     }
 }
