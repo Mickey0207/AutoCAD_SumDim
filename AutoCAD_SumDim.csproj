@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AutoCAD.NET" Version="25.0.1" />
+    <PackageReference Include="EPPlus" Version="8.0.6" />
   </ItemGroup>
   <ItemGroup>
     <Compile Update="myCommands.Designer.cs">

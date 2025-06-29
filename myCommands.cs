@@ -269,18 +269,8 @@ namespace AutoCAD_SumDim
             // Add columns for each segment (B1~N1 for segment numbers, B2~N2 for lengths)
             for (int i = 1; i <= maxSegments; i++)
             {
-                table.Columns.Add($"線段{i}", typeof(string)); // Segment number row
+                table.Columns.Add($"線段{i}", typeof(string)); // Segment length columns
             }
-
-            // Create rows
-            // First row: A1=標註文字, B1~N1=線段編號
-            var segmentNumberRow = table.NewRow();
-            segmentNumberRow[0] = "線段編號";
-            for (int i = 1; i <= maxSegments; i++)
-            {
-                segmentNumberRow[i] = i.ToString();
-            }
-            table.Rows.Add(segmentNumberRow);
 
             // Data rows: A2~An=標註引線中的文字, B2~N2=線段長度
             foreach (var data in allData)
@@ -320,17 +310,6 @@ namespace AutoCAD_SumDim
 
             // Bind the DataTable to the DataGridView
             dgv.DataSource = table;
-
-            // Format the first row (segment number row) with different styling
-            dgv.DataBindingComplete += (sender, e) =>
-            {
-                if (dgv.Rows.Count > 0)
-                {
-                    var firstRow = dgv.Rows[0];
-                    firstRow.DefaultCellStyle.BackColor = System.Drawing.Color.LightBlue;
-                    firstRow.DefaultCellStyle.Font = new System.Drawing.Font("Arial", 12, System.Drawing.FontStyle.Bold);
-                }
-            };
 
             // Add the DataGridView to the form
             resultForm.Controls.Add(dgv);
