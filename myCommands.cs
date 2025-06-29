@@ -2,9 +2,12 @@
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
+using Autodesk.AutoCAD.Geometry;
 using System;
-using System.IO;
 using System.Windows.Forms;
+using System.Collections.Generic;
+using System.Text;
+using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 [assembly: CommandClass(typeof(AutoCAD_SumDim.MyCommands))]
@@ -14,148 +17,227 @@ namespace AutoCAD_SumDim
 {
     public class MyCommands
     {
-        // 聚合線長度統計命令
-        [CommandMethod("PLSTATS", "聚合線統計", "聚合線統計", CommandFlags.Modal)]
-        public void PolylineStats()
+        // 聚合線分段分析命令 - 支援框選和點選
+        [CommandMethod("PLPICK", "聚合線點選", "聚合線點選", CommandFlags.Modal)]
+        public void PolylinePickStats()
         {
             try
             {
                 Document doc = AcadApp.DocumentManager.MdiActiveDocument;
                 Editor ed = doc.Editor;
 
-                // 顯示用戶介面
-                using (var form = new PolylineStatsForm())
+                ed.WriteMessage("\n請選擇聚合線進行分析:");
+                ed.WriteMessage("\n提示: 可以框選多條聚合線，或逐一點選聚合線");
+
+                // 提示用戶選擇聚合線，支援框選和點選
+                List<ObjectId> selectedPolylines = new List<ObjectId>();
+
+                // 創建選擇選項，允許框選
+                PromptSelectionOptions pso = new PromptSelectionOptions();
+                pso.MessageForAdding = "\n請選擇聚合線（支援框選或點選）: ";
+                pso.MessageForRemoval = "\n移除聚合線: ";
+                pso.AllowDuplicates = false;
+
+                // 創建選擇過濾器，只允許選擇聚合線
+                TypedValue[] filterArray = new TypedValue[1];
+                filterArray[0] = new TypedValue((int)DxfCode.Start, "LWPOLYLINE");
+                SelectionFilter filter = new SelectionFilter(filterArray);
+
+                // 執行選擇
+                PromptSelectionResult psr = ed.GetSelection(pso, filter);
+                
+                if (psr.Status == PromptStatus.OK)
                 {
-                    var result = AcadApp.ShowModalDialog(form);
-                    
-                    if (result == DialogResult.OK)
+                    selectedPolylines.AddRange(psr.Value.GetObjectIds());
+                    ed.WriteMessage($"\n已選擇 {selectedPolylines.Count} 條聚合線");
+                }
+                else
+                {
+                    ed.WriteMessage("\n未選擇任何聚合線，操作已取消。");
+                    return;
+                }
+
+                if (selectedPolylines.Count == 0)
+                {
+                    ed.WriteMessage("\n未選擇任何聚合線，操作已取消。");
+                    return;
+                }
+
+                // 提示用戶選擇引線標註（可選）
+                ed.WriteMessage("\n請選擇相關的引線標註（可選，按Enter跳過）:");
+                List<string> leaderTexts = new List<string>();
+                
+                while (true)
+                {
+                    PromptEntityOptions peoLeader = new PromptEntityOptions("\n請點選引線標註或文字（Enter結束）: ");
+                    peoLeader.AllowNone = true;
+                    peoLeader.SetRejectMessage("\n請選擇引線、文字物件或按Enter結束!");
+                    peoLeader.AddAllowedClass(typeof(Leader), true);
+                    peoLeader.AddAllowedClass(typeof(MLeader), true);
+                    peoLeader.AddAllowedClass(typeof(DBText), true);
+                    peoLeader.AddAllowedClass(typeof(MText), true);
+
+                    PromptEntityResult perLeader = ed.GetEntity(peoLeader);
+                    if (perLeader.Status == PromptStatus.None)
                     {
-                        ed.WriteMessage("\n開始分析聚合線...");
-                        
-                        // 創建分析器
-                        var analyzer = new PolylineAnalyzer(form.BlockMapping);
-                        
-                        // 分析聚合線
-                        var polylineInfos = analyzer.AnalyzePolylines(form.SelectedLayers);
-                        
-                        if (polylineInfos.Count == 0)
+                        break; // 用戶按了Enter，結束選擇
+                    }
+                    else if (perLeader.Status == PromptStatus.OK)
+                    {
+                        string text = GetEntityText(perLeader.ObjectId);
+                        if (!string.IsNullOrEmpty(text))
                         {
-                            ed.WriteMessage("\n在指定的圖層中沒有找到聚合線。");
-                            MessageBox.Show("在指定的圖層中沒有找到聚合線。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                            return;
-                        }
-                        
-                        // 輸出到Excel/CSV
-                        string fullPath = Path.Combine(form.OutputPath, form.ExcelFileName);
-                        string actualOutputPath = "";
-                        
-                        try
-                        {
-                            analyzer.ExportToExcel(polylineInfos, fullPath);
-                            actualOutputPath = fullPath;
-                        }
-                        catch (System.Exception ex)
-                        {
-                            // 如果輸出失敗，檢查是否有CSV檔案產生
-                            string csvPath = Path.ChangeExtension(fullPath, ".csv");
-                            if (File.Exists(csvPath))
-                            {
-                                actualOutputPath = csvPath;
-                                ed.WriteMessage($"\n注意：{ex.Message}");
-                            }
-                            else
-                            {
-                                throw ex;
-                            }
-                        }
-                        
-                        ed.WriteMessage($"\n統計完成！共分析了 {polylineInfos.Count} 條聚合線。");
-                        ed.WriteMessage($"\n檔案已儲存到: {actualOutputPath}");
-                        
-                        string fileType = Path.GetExtension(actualOutputPath).ToUpper() == ".CSV" ? "CSV" : "Excel";
-                        MessageBox.Show($"統計完成！\n\n共分析了 {polylineInfos.Count} 條聚合線。\n{fileType}檔案已儲存到:\n{actualOutputPath}\n\n注意：CSV檔案可以用Excel直接開啟", 
-                                      "統計完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        
-                        // 詢問是否開啟檔案
-                        if (MessageBox.Show($"是否要開啟{fileType}檔案？", "開啟檔案", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                        {
-                            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                            {
-                                FileName = actualOutputPath,
-                                UseShellExecute = true
-                            });
+                            leaderTexts.Add(text);
+                            ed.WriteMessage($"\n已添加文字: {text}");
                         }
                     }
+                    else
+                    {
+                        break; // 其他狀況結束選擇
+                    }
+                }
+
+                // 分析聚合線
+                var analyzer = new SimplePolylineAnalyzer();
+                var result = analyzer.AnalyzePolylines(selectedPolylines, leaderTexts);
+
+                if (result != null)
+                {
+                    // 顯示結果彈窗
+                    ShowResultDialog(result);
+                }
+                else
+                {
+                    ed.WriteMessage("\n無法分析選擇的聚合線。");
                 }
             }
             catch (System.Exception ex)
             {
                 Document doc = AcadApp.DocumentManager.MdiActiveDocument;
                 Editor ed = doc.Editor;
-                ed.WriteMessage($"\n執行聚合線統計時發生錯誤: {ex.Message}");
-                MessageBox.Show($"執行聚合線統計時發生錯誤:\n{ex.Message}", "錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ed.WriteMessage($"\n執行聚合線分析時發生錯誤: {ex.Message}");
             }
         }
 
-        // The CommandMethod attribute can be applied to any public  member 
-        // function of any public class.
-        // The function should take no arguments and return nothing.
-        // If the method is an intance member then the enclosing class is 
-        // intantiated for each document. If the member is a static member then
-        // the enclosing class is NOT intantiated.
-        //
-        // NOTE: CommandMethod has overloads where you can provide helpid and
-        // context menu.
-
-        // Modal Command with localized name
-        [CommandMethod("MyGroup", "MyCommand", "MyCommandLocal", CommandFlags.Modal)]
-        public void MyCommand() // This method can have any name
+        private string GetEntityText(ObjectId entityId)
         {
-            // Put your command code here
-            Document doc = AcadApp.DocumentManager.MdiActiveDocument;
-            Autodesk.AutoCAD.EditorInput.Editor ed;
-            if (doc != null)
+            try
             {
-                ed = doc.Editor;
-                ed.WriteMessage("Hello, this is your first command.");
+                Document doc = AcadApp.DocumentManager.MdiActiveDocument;
+                Database db = doc.Database;
 
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    Entity ent = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
+                    
+                    if (ent is DBText dbText)
+                    {
+                        return dbText.TextString;
+                    }
+                    else if (ent is MText mText)
+                    {
+                        return mText.Contents;
+                    }
+                    else if (ent is Leader leader)
+                    {
+                        // 尋找引線相關的標註文字
+                        return FindLeaderText(leader);
+                    }
+                    else if (ent is MLeader mLeader)
+                    {
+                        return mLeader.MText?.Contents ?? "";
+                    }
+                    
+                    tr.Commit();
+                }
             }
-        }
-
-        // Modal Command with pickfirst selection
-        [CommandMethod("MyGroup", "MyPickFirst", "MyPickFirstLocal", CommandFlags.Modal | CommandFlags.UsePickSet)]
-        public void MyPickFirst() // This method can have any name
-        {
-            PromptSelectionResult result = AcadApp.DocumentManager.MdiActiveDocument.Editor.GetSelection();
-            if (result.Status == PromptStatus.OK)
+            catch
             {
-                // There are selected entities
-                // Put your command using pickfirst set code here
+                // 忽略錯誤
             }
-            else
+            
+            return "";
+        }
+
+        private string FindLeaderText(Leader leader)
+        {
+            try
             {
-                // There are no selected entities
-                // Put your command code here
+                Document doc = AcadApp.DocumentManager.MdiActiveDocument;
+                Database db = doc.Database;
+
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    // 嘗試找到引線相關的標註
+                    if (leader.HasArrowHead)
+                    {
+                        Point3d endPoint = leader.VertexAt(leader.NumVertices - 1);
+                        
+                        // 在引線終點附近尋找文字
+                        BlockTable bt = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
+                        BlockTableRecord ms = tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead) as BlockTableRecord;
+
+                        foreach (ObjectId objId in ms)
+                        {
+                            Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                            
+                            if (ent is DBText dbText)
+                            {
+                                if (endPoint.DistanceTo(dbText.Position) <= 5.0)
+                                {
+                                    return dbText.TextString;
+                                }
+                            }
+                            else if (ent is MText mText)
+                            {
+                                if (endPoint.DistanceTo(mText.Location) <= 5.0)
+                                {
+                                    return mText.Contents;
+                                }
+                            }
+                        }
+                    }
+                    
+                    tr.Commit();
+                }
             }
+            catch
+            {
+                // 忽略錯誤
+            }
+            
+            return "";
         }
 
-        // Application Session Command with localized name
-        [CommandMethod("MyGroup", "MySessionCmd", "MySessionCmdLocal", CommandFlags.Modal | CommandFlags.Session)]
-        public void MySessionCmd() // This method can have any name
+        private void ShowResultDialog(MultiPolylineAnalysisResult result)
         {
-            // Put your command code here
-        }
+            var sb = new StringBuilder();
+            sb.AppendLine("=== 聚合線分段分析結果 ===");
+            sb.AppendLine();
+            
+            if (result.LeaderTexts.Count > 0)
+            {
+                sb.AppendLine("引線標註文字:");
+                foreach (var text in result.LeaderTexts)
+                {
+                    sb.AppendLine($"  • {text}");
+                }
+                sb.AppendLine();
+            }
+            
+            sb.AppendLine("線段分析:");
+            for (int i = 0; i < result.Segments.Count; i++)
+            {
+                var segment = result.Segments[i];
+                sb.AppendLine($"  第 {i + 1} 段: {segment.Length:F2} 單位");
+            }
+            sb.AppendLine();
+            
+            sb.AppendLine($"總長度: {result.TotalLength:F2} 單位");
+            sb.AppendLine($"總段數: {result.Segments.Count} 段");
+            sb.AppendLine($"聚合線數量: {result.PolylineCount} 條");
 
-        // LispFunction is similar to CommandMethod but it creates a lisp 
-        // callable function. Many return types are supported not just string
-        // or integer.
-        [LispFunction("MyLispFunction", "MyLispFunctionLocal")]
-        public int MyLispFunction(ResultBuffer args) // This method can have any name
-        {
-            // Put your command code here
-
-            // Return a value to the AutoCAD Lisp Interpreter
-            return 1;
+            MessageBox.Show(sb.ToString(), "聚合線分析結果", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
 }
