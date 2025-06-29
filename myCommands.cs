@@ -8,6 +8,8 @@ using System.Windows.Forms;
 using System.Collections.Generic;
 using System.Text;
 using System.Linq;
+using System.Data;
+using System.Drawing;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 [assembly: CommandClass(typeof(AutoCAD_SumDim.MyCommands))]
@@ -17,7 +19,14 @@ namespace AutoCAD_SumDim
 {
     public class MyCommands
     {
-        // 聚合線分段分析命令 - 支援框選和點選
+        // A class to hold the analysis data for each polyline
+        private class PolylineAnalysisData
+        {
+            public string LeaderText { get; set; }
+            public MultiPolylineAnalysisResult AnalysisResult { get; set; }
+        }
+
+        // 聚合線分段分析命令 - 支援重複選擇和詳細分析
         [CommandMethod("PLPICK", "聚合線點選", "聚合線點選", CommandFlags.Modal)]
         public void PolylinePickStats()
         {
@@ -26,89 +35,105 @@ namespace AutoCAD_SumDim
                 Document doc = AcadApp.DocumentManager.MdiActiveDocument;
                 Editor ed = doc.Editor;
 
-                ed.WriteMessage("\n請選擇聚合線進行分析:");
-                ed.WriteMessage("\n提示: 可以框選多條聚合線，或逐一點選聚合線");
+                // List to store all analysis data
+                var allAnalysisData = new List<PolylineAnalysisData>();
 
-                // 提示用戶選擇聚合線，支援框選和點選
-                List<ObjectId> selectedPolylines = new List<ObjectId>();
-
-                // 創建選擇選項，允許框選
-                PromptSelectionOptions pso = new PromptSelectionOptions();
-                pso.MessageForAdding = "\n請選擇聚合線（支援框選或點選）: ";
-                pso.MessageForRemoval = "\n移除聚合線: ";
-                pso.AllowDuplicates = false;
-
-                // 創建選擇過濾器，只允許選擇聚合線
-                TypedValue[] filterArray = new TypedValue[1];
-                filterArray[0] = new TypedValue((int)DxfCode.Start, "LWPOLYLINE");
-                SelectionFilter filter = new SelectionFilter(filterArray);
-
-                // 執行選擇
-                PromptSelectionResult psr = ed.GetSelection(pso, filter);
-                
-                if (psr.Status == PromptStatus.OK)
-                {
-                    selectedPolylines.AddRange(psr.Value.GetObjectIds());
-                    ed.WriteMessage($"\n已選擇 {selectedPolylines.Count} 條聚合線");
-                }
-                else
-                {
-                    ed.WriteMessage("\n未選擇任何聚合線，操作已取消。");
-                    return;
-                }
-
-                if (selectedPolylines.Count == 0)
-                {
-                    ed.WriteMessage("\n未選擇任何聚合線，操作已取消。");
-                    return;
-                }
-
-                // 提示用戶選擇引線標註（可選）
-                ed.WriteMessage("\n請選擇相關的引線標註（可選，按Enter跳過）:");
-                List<string> leaderTexts = new List<string>();
-                
                 while (true)
                 {
-                    PromptEntityOptions peoLeader = new PromptEntityOptions("\n請點選引線標註或文字（Enter結束）: ");
-                    peoLeader.AllowNone = true;
-                    peoLeader.SetRejectMessage("\n請選擇引線、文字物件或按Enter結束!");
-                    peoLeader.AddAllowedClass(typeof(Leader), true);
-                    peoLeader.AddAllowedClass(typeof(MLeader), true);
-                    peoLeader.AddAllowedClass(typeof(DBText), true);
-                    peoLeader.AddAllowedClass(typeof(MText), true);
+                    // 1. Prompt user to select polylines (support both window selection and picking)
+                    ed.WriteMessage("\n請選擇聚合線進行分析 (可框選多條或點選單條，按Enter結束): ");
+                    
+                    List<ObjectId> selectedPolylines = new List<ObjectId>();
 
-                    PromptEntityResult perLeader = ed.GetEntity(peoLeader);
-                    if (perLeader.Status == PromptStatus.None)
+                    // 創建選擇選項，允許框選和點選
+                    PromptSelectionOptions pso = new PromptSelectionOptions();
+                    pso.MessageForAdding = "\n請選擇聚合線（支援框選或點選，Enter結束）: ";
+                    pso.MessageForRemoval = "\n移除聚合線: ";
+                    pso.AllowDuplicates = false;
+                    pso.SingleOnly = false; // Allow multiple selection
+
+                    // 創建選擇過濾器，只允許選擇聚合線
+                    TypedValue[] filterArray = new TypedValue[1];
+                    filterArray[0] = new TypedValue((int)DxfCode.Start, "LWPOLYLINE");
+                    SelectionFilter filter = new SelectionFilter(filterArray);
+
+                    // 執行選擇
+                    PromptSelectionResult psr = ed.GetSelection(pso, filter);
+
+                    if (psr.Status == PromptStatus.Cancel)
                     {
-                        break; // 用戶按了Enter，結束選擇
+                        ed.WriteMessage("\n操作已取消。");
+                        return;
                     }
-                    else if (perLeader.Status == PromptStatus.OK)
+
+                    if (psr.Status == PromptStatus.None || psr.Status != PromptStatus.OK)
                     {
-                        string text = GetEntityText(perLeader.ObjectId);
-                        if (!string.IsNullOrEmpty(text))
+                        // User pressed Enter or no selection, break the loop
+                        break;
+                    }
+
+                    selectedPolylines.AddRange(psr.Value.GetObjectIds());
+                    ed.WriteMessage($"\n已選擇 {selectedPolylines.Count} 條聚合線");
+
+                    // 2. Prompt user to select leader texts for this group
+                    ed.WriteMessage("\n請選擇對應的標註文字（可選擇多個，按Enter結束）:");
+                    List<string> leaderTexts = new List<string>();
+                    
+                    while (true)
+                    {
+                        PromptEntityOptions peoLeader = new PromptEntityOptions("\n請點選引線標註或文字（Enter結束）: ");
+                        peoLeader.AllowNone = true;
+                        peoLeader.SetRejectMessage("\n請選擇引線、文字物件或按Enter結束!");
+                        peoLeader.AddAllowedClass(typeof(Leader), true);
+                        peoLeader.AddAllowedClass(typeof(MLeader), true);
+                        peoLeader.AddAllowedClass(typeof(DBText), true);
+                        peoLeader.AddAllowedClass(typeof(MText), true);
+
+                        PromptEntityResult perLeader = ed.GetEntity(peoLeader);
+                        if (perLeader.Status == PromptStatus.None)
                         {
-                            leaderTexts.Add(text);
-                            ed.WriteMessage($"\n已添加文字: {text}");
+                            break; // 用戶按了Enter，結束選擇
                         }
+                        else if (perLeader.Status == PromptStatus.OK)
+                        {
+                            string text = GetEntityText(perLeader.ObjectId);
+                            if (!string.IsNullOrEmpty(text))
+                            {
+                                leaderTexts.Add(text);
+                                ed.WriteMessage($"\n已添加文字: {text}");
+                            }
+                        }
+                        else
+                        {
+                            break; // 其他狀況結束選擇
+                        }
+                    }
+
+                    // 3. Analyze the polylines
+                    var analyzer = new SimplePolylineAnalyzer();
+                    var result = analyzer.AnalyzePolylines(selectedPolylines, leaderTexts);
+
+                    if (result != null)
+                    {
+                        // 4. Store and display data in command line
+                        string mainText = leaderTexts.Count > 0 ? leaderTexts[0] : "聚合線分析";
+                        allAnalysisData.Add(new PolylineAnalysisData { LeaderText = mainText, AnalysisResult = result });
+                        ed.WriteMessage($"\n已記錄: 標註='{mainText}', 總長度={result.TotalLength:F2}, 總段數={result.Segments.Count}");
                     }
                     else
                     {
-                        break; // 其他狀況結束選擇
+                        ed.WriteMessage("\n無法分析所選聚合線。");
                     }
                 }
 
-                // 分析聚合線
-                var analyzer = new SimplePolylineAnalyzer();
-                var result = analyzer.AnalyzePolylines(selectedPolylines, leaderTexts);
-
-                if (result != null)
+                // 5. Show final results in a DataGridView if any data was collected
+                if (allAnalysisData.Count > 0)
                 {
-                    // 顯示結果彈窗
-                    ShowResultDialog(result);
+                    ShowNewFormatResultDialog(allAnalysisData);
                 }
                 else
                 {
-                    ed.WriteMessage("\n無法分析選擇的聚合線。");
+                    ed.WriteMessage("\n沒有收集到任何數據。");
                 }
             }
             catch (System.Exception ex)
@@ -209,35 +234,109 @@ namespace AutoCAD_SumDim
             return "";
         }
 
-        private void ShowResultDialog(MultiPolylineAnalysisResult result)
+        private void ShowNewFormatResultDialog(List<PolylineAnalysisData> allData)
         {
-            var sb = new StringBuilder();
-            sb.AppendLine("=== 聚合線分段分析結果 ===");
-            sb.AppendLine();
-            
-            if (result.LeaderTexts.Count > 0)
-            {
-                sb.AppendLine("引線標註文字:");
-                foreach (var text in result.LeaderTexts)
-                {
-                    sb.AppendLine($"  • {text}");
-                }
-                sb.AppendLine();
-            }
-            
-            sb.AppendLine("線段分析:");
-            for (int i = 0; i < result.Segments.Count; i++)
-            {
-                var segment = result.Segments[i];
-                sb.AppendLine($"  第 {i + 1} 段: {segment.Length:F2} 單位");
-            }
-            sb.AppendLine();
-            
-            sb.AppendLine($"總長度: {result.TotalLength:F2} 單位");
-            sb.AppendLine($"總段數: {result.Segments.Count} 段");
-            sb.AppendLine($"聚合線數量: {result.PolylineCount} 條");
+            // Create a new form
+            Form resultForm = new Form();
+            resultForm.Text = "聚合線分段分析結果";
+            resultForm.Size = new Size(800, 500); // Larger window size
+            resultForm.StartPosition = FormStartPosition.CenterScreen;
+            resultForm.MinimizeBox = false;
+            resultForm.MaximizeBox = true;
+            resultForm.ShowInTaskbar = false;
 
-            MessageBox.Show(sb.ToString(), "聚合線分析結果", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Create a DataGridView
+            DataGridView dgv = new DataGridView();
+            dgv.Dock = DockStyle.Fill;
+            dgv.AllowUserToAddRows = false;
+            dgv.AllowUserToDeleteRows = false;
+            dgv.ReadOnly = true;
+            dgv.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+            dgv.RowHeadersVisible = false;
+            dgv.Font = new System.Drawing.Font("Arial", 12, System.Drawing.FontStyle.Regular);
+            dgv.DefaultCellStyle.Font = new System.Drawing.Font("Arial", 12);
+            dgv.ColumnHeadersDefaultCellStyle.Font = new System.Drawing.Font("Arial", 12, System.Drawing.FontStyle.Bold);
+
+            // Calculate maximum number of segments across all data
+            int maxSegments = allData.Max(data => data.AnalysisResult.Segments.Count);
+
+            // Create a DataTable with dynamic columns
+            System.Data.DataTable table = new System.Data.DataTable();
+            
+            // Add the first column for annotation text
+            table.Columns.Add("標註文字", typeof(string));
+            
+            // Add columns for each segment (B1~N1 for segment numbers, B2~N2 for lengths)
+            for (int i = 1; i <= maxSegments; i++)
+            {
+                table.Columns.Add($"線段{i}", typeof(string)); // Segment number row
+            }
+
+            // Create rows
+            // First row: A1=標註文字, B1~N1=線段編號
+            var segmentNumberRow = table.NewRow();
+            segmentNumberRow[0] = "線段編號";
+            for (int i = 1; i <= maxSegments; i++)
+            {
+                segmentNumberRow[i] = i.ToString();
+            }
+            table.Rows.Add(segmentNumberRow);
+
+            // Data rows: A2~An=標註引線中的文字, B2~N2=線段長度
+            foreach (var data in allData)
+            {
+                var dataRow = table.NewRow();
+                dataRow[0] = data.LeaderText; // A column contains annotation text
+                
+                // Fill in the segment lengths
+                for (int i = 0; i < data.AnalysisResult.Segments.Count; i++)
+                {
+                    if (i + 1 < table.Columns.Count)
+                    {
+                        dataRow[i + 1] = Math.Round(data.AnalysisResult.Segments[i].Length, 2).ToString();
+                    }
+                }
+                
+                // Fill remaining columns with empty strings
+                for (int i = data.AnalysisResult.Segments.Count + 1; i < table.Columns.Count; i++)
+                {
+                    dataRow[i] = "";
+                }
+                
+                table.Rows.Add(dataRow);
+
+                // Add additional rows for any extra leader texts
+                for (int j = 1; j < data.AnalysisResult.LeaderTexts.Count; j++)
+                {
+                    var extraTextRow = table.NewRow();
+                    extraTextRow[0] = data.AnalysisResult.LeaderTexts[j];
+                    for (int k = 1; k < table.Columns.Count; k++)
+                    {
+                        extraTextRow[k] = "";
+                    }
+                    table.Rows.Add(extraTextRow);
+                }
+            }
+
+            // Bind the DataTable to the DataGridView
+            dgv.DataSource = table;
+
+            // Format the first row (segment number row) with different styling
+            dgv.DataBindingComplete += (sender, e) =>
+            {
+                if (dgv.Rows.Count > 0)
+                {
+                    var firstRow = dgv.Rows[0];
+                    firstRow.DefaultCellStyle.BackColor = System.Drawing.Color.LightBlue;
+                    firstRow.DefaultCellStyle.Font = new System.Drawing.Font("Arial", 12, System.Drawing.FontStyle.Bold);
+                }
+            };
+
+            // Add the DataGridView to the form
+            resultForm.Controls.Add(dgv);
+
+            // Show the form modally
+            AcadApp.ShowModalDialog(resultForm);
         }
     }
 }
